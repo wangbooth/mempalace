@@ -46,6 +46,7 @@ _AUTO_ORDER = [
 
 _EF_CACHE: dict = {}
 _WARNED: set = set()
+_OVERRIDE_EF: list = []
 
 
 def _resolve_providers(device: str) -> tuple[list, str]:
@@ -116,13 +117,33 @@ def _build_ef_class():
     return _MempalaceONNX
 
 
+def set_override_embedding_function(ef) -> None:
+    """Set a process-wide override for the embedding function.
+
+    When set, ``get_embedding_function()`` returns this instead of the
+    built-in ONNX MiniLM model.  Callers must ensure the override produces
+    vectors of the same dimensionality as the target palace collection.
+    Pass ``None`` to clear.
+    """
+    _OVERRIDE_EF.clear()
+    if ef is not None:
+        _OVERRIDE_EF.append(ef)
+        logger.info("Embedding function overridden with %s", type(ef).__name__)
+
+
 def get_embedding_function(device: Optional[str] = None):
     """Return a cached embedding function bound to the requested device.
 
     ``device=None`` reads from :class:`MempalaceConfig.embedding_device`.
     The returned function is shared across calls with the same resolved
     provider list so we only pay model-load cost once per process.
+
+    If :func:`set_override_embedding_function` was called with a non-None
+    value, that override is returned unconditionally.
     """
+    if _OVERRIDE_EF:
+        return _OVERRIDE_EF[0]
+
     if device is None:
         from .config import MempalaceConfig
 
