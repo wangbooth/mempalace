@@ -695,14 +695,14 @@ def test_quarantine_stale_hnsw_leaves_empty_segment_without_metadata_alone(tmp_p
     assert seg.exists()
 
 
-def test_segment_without_metadata_but_with_nontrivial_data_is_unhealthy(tmp_path):
-    """Data without index_metadata.pickle is a partial flush, not a fresh segment."""
+def test_segment_without_metadata_but_with_nontrivial_data_can_be_healthy(tmp_path):
+    """ChromaDB 1.5 can persist non-trivial HNSW data without metadata."""
 
     seg = tmp_path / "abcd-1234-5678"
     seg.mkdir()
     (seg / "data_level0.bin").write_bytes(b"\0" * (_HNSW_MISSING_METADATA_DATA_FLOOR + 1))
 
-    assert not _segment_appears_healthy(str(seg))
+    assert _segment_appears_healthy(str(seg))
 
 
 def test_segment_without_metadata_and_tiny_data_is_still_treated_as_fresh(tmp_path):
@@ -715,8 +715,8 @@ def test_segment_without_metadata_and_tiny_data_is_still_treated_as_fresh(tmp_pa
     assert _segment_appears_healthy(str(seg))
 
 
-def test_quarantine_stale_hnsw_renames_missing_metadata_with_nontrivial_data(tmp_path):
-    """Regression for #1274: missing pickle + non-trivial data must quarantine."""
+def test_quarantine_stale_hnsw_leaves_missing_metadata_with_sane_payload(tmp_path):
+    """Missing metadata alone is not corruption under ChromaDB 1.5."""
 
     now = 1_700_000_000.0
     palace, seg = _make_palace_with_segment(
@@ -730,13 +730,44 @@ def test_quarantine_stale_hnsw_renames_missing_metadata_with_nontrivial_data(tmp
 
     moved = quarantine_stale_hnsw(str(palace), stale_seconds=3600.0)
 
-    assert len(moved) == 1
-    assert ".drift-" in moved[0]
-    assert not seg.exists()
+    assert moved == []
+    assert seg.exists()
 
-    drift_dirs = [p for p in palace.iterdir() if ".drift-" in p.name]
-    assert len(drift_dirs) == 1
-    assert (drift_dirs[0] / "data_level0.bin").exists()
+
+def test_quarantine_stale_hnsw_keeps_chromadb_1_5_segment_without_metadata(tmp_path):
+    """ChromaDB 1.5 can persist HNSW payload files without index_metadata.pickle.
+
+    A clean add+close creates data_level0.bin/header.bin/length.bin/link_lists.bin
+    but no index_metadata.pickle. That shape must not be quarantined merely
+    because chroma.sqlite3 is newer than data_level0.bin; otherwise every clean
+    daemon restart discards the freshly rebuilt HNSW segment.
+    """
+
+    backend = ChromaBackend()
+    palace = tmp_path / "palace"
+    collection = backend.get_collection(str(palace), "mempalace_drawers", create=True)
+    collection.add(
+        ids=["drawer-a", "drawer-b"],
+        documents=["hello world", "another drawer"],
+        metadatas=[{"source": "test"}, {"source": "test"}],
+        embeddings=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+    )
+    backend.close()
+
+    segments = [path for path in palace.iterdir() if path.is_dir() and "-" in path.name]
+    assert len(segments) == 1
+    segment = segments[0]
+    assert (segment / "data_level0.bin").exists()
+    assert not (segment / "index_metadata.pickle").exists()
+
+    now = 1_700_000_000.0
+    os.utime(segment / "data_level0.bin", (now - 7200, now - 7200))
+    os.utime(palace / "chroma.sqlite3", (now, now))
+
+    moved = quarantine_stale_hnsw(str(palace), stale_seconds=3600.0)
+
+    assert moved == []
+    assert segment.exists()
 
 
 def test_quarantine_stale_hnsw_renames_truncated_metadata(tmp_path):

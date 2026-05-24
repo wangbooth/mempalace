@@ -88,6 +88,31 @@ def test_quarantine_catches_link_bloat_without_mtime_drift(tmp_path):
     assert moved_path.name.startswith("11111111-2222-3333-4444-555555555555.drift-")
 
 
+def test_quarantine_catches_link_bloat_without_metadata(tmp_path):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+
+    db_path = palace / "chroma.sqlite3"
+    db_path.write_text("sqlite placeholder")
+
+    seg_dir = palace / "11111111-2222-3333-4444-555555555555"
+    _write_segment(
+        seg_dir,
+        data_size=100,
+        link_size=int(100 * (_HNSW_LINK_TO_DATA_MAX_RATIO + 1)),
+        write_metadata=False,
+    )
+
+    same_time = 1_700_000_000
+    os.utime(db_path, (same_time, same_time))
+    os.utime(seg_dir / "data_level0.bin", (same_time, same_time))
+
+    moved = quarantine_stale_hnsw(str(palace), stale_seconds=999_999)
+
+    assert len(moved) == 1
+    assert not seg_dir.exists()
+
+
 def test_quarantine_leaves_reasonable_payload_in_place(tmp_path):
     palace = tmp_path / "palace"
     palace.mkdir()

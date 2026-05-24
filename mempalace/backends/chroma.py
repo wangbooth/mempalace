@@ -102,11 +102,13 @@ _HNSW_BLOAT_GUARD = {
     "hnsw:sync_threshold": 50_000,
 }
 
-# Missing index_metadata.pickle is normal only while a segment is still fresh
-# or effectively empty. Once data_level0.bin has non-trivial payload, a
-# missing metadata pickle means the segment was interrupted after writing HNSW
-# data but before writing its metadata. Letting Chroma open that shape can
-# segfault or hang in native HNSW code.
+# ChromaDB 1.5.x may persist data_level0.bin/header.bin/length.bin/link_lists.bin
+# without writing index_metadata.pickle at all. Older mempalace builds treated
+# non-trivial data without metadata as partial-flush corruption, but that
+# quarantines healthy Chroma 1.5 palaces on every cold start once sqlite mtime
+# drifts ahead of HNSW. Missing metadata is therefore not corruption by itself;
+# payload-shape checks such as the link_lists/data_level0 ratio remain the
+# evidence-based guard for unsafe HNSW files.
 _HNSW_MISSING_METADATA_DATA_FLOOR = 1024
 
 
@@ -141,11 +143,10 @@ def _segment_appears_healthy(seg_dir: str) -> bool:
     ``0x2e`` (the protocol/terminator byte sequence chromadb serializes
     with).
 
-    Missing metadata is healthy only while the segment still looks fresh or
-    empty. If ``data_level0.bin`` already has non-trivial payload but
-    ``index_metadata.pickle`` is missing, the segment is partially flushed:
-    Chroma wrote vector data without the metadata it needs to reopen the
-    HNSW reader safely.
+    Missing metadata is allowed. ChromaDB 1.5.x can produce a complete segment
+    with data/header/length/link files and no ``index_metadata.pickle``; the
+    segment can be reopened by Chroma, so quarantine must not infer corruption
+    from metadata absence alone.
 
     Deliberately format-sniffs only; never deserializes. Deserialization
     can execute arbitrary code, and the byte-sniff is sufficient to
@@ -163,17 +164,8 @@ def _segment_appears_healthy(seg_dir: str) -> bool:
 
     meta_path = os.path.join(seg_dir, "index_metadata.pickle")
     if not os.path.isfile(meta_path):
-        data_path = os.path.join(seg_dir, "data_level0.bin")
-        try:
-            if (
-                os.path.isfile(data_path)
-                and os.path.getsize(data_path) > _HNSW_MISSING_METADATA_DATA_FLOOR
-            ):
-                return False
-        except OSError:
-            return False
-
-        # No metadata and no meaningful vector payload yet: fresh/empty segment.
+        # No metadata is a valid ChromaDB 1.5.x persistent shape as long as
+        # the payload files themselves are not structurally implausible.
         return True
 
     try:
