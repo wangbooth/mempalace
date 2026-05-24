@@ -39,6 +39,29 @@ We do not accept summarization of user content, cloud storage/sync features, tel
 uv sync --extra dev   # recommended; or: pip install -e ".[dev]"
 ```
 
+## DeepMem Fork Branch Rules
+
+This checkout is also used as DeepMem's custom mempalace fork.
+
+- `develop` mirrors the original MemPalace upstream branch and must stay aligned
+  with `upstream/develop`.
+- `deepmem-main` is the DeepMem custom main branch. DeepMem-specific fixes and
+  integrations land here.
+- Feature/fix branches for DeepMem work should branch from `deepmem-main` and
+  merge back into `deepmem-main`, not `develop`.
+- Sync upstream by fast-forwarding `develop`, then merge `develop` into
+  `deepmem-main`. Do not rebase published `deepmem-main`.
+- `main` is legacy in this checkout and should not be used for DeepMem work.
+
+Recommended sync:
+
+```bash
+git switch develop
+git pull --ff-only upstream develop
+git switch deepmem-main
+git merge develop
+```
+
 ## Commands
 
 ```bash

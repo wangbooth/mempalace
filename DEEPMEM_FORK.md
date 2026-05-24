@@ -1,14 +1,26 @@
 # DeepMem Custom Fork
 
-This branch (`deepmem-custom`) contains DeepMem-specific modifications on top
-of the upstream mempalace project.  When upstream releases new versions, merge
-them into this branch rather than rebasing, so the custom patches remain
-clearly separated in git history.
+The `deepmem-main` branch contains DeepMem-specific modifications on top of the
+upstream mempalace project. When upstream releases new versions, fast-forward
+the local `develop` branch to upstream and merge `develop` into `deepmem-main`
+rather than rebasing, so the custom patches remain clearly separated in git
+history.
 
 ## Upstream
 
-- Repository: https://github.com/workblac/mempalace
-- Tracking branch: `main` (synced periodically from `origin/main`)
+- Repository: https://github.com/MemPalace/mempalace
+- Upstream branch: `develop`
+- Local mirror branch: `develop`
+- DeepMem custom branch: `deepmem-main`
+
+Recommended sync:
+
+```bash
+git switch develop
+git pull --ff-only upstream develop
+git switch deepmem-main
+git merge develop
+```
 
 ## Custom Changes
 
@@ -30,5 +42,5 @@ change is additive — no existing behaviour is altered when no override is set.
 ## Build & Install
 
 DeepMem daemon depends on this branch via editable install or path dependency.
-Always use `deepmem-custom` for DeepMem builds, never the upstream `main`
+Always use `deepmem-main` for DeepMem builds, never the upstream `develop`
 directly.
