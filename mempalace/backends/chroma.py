@@ -104,6 +104,36 @@ def _hnsw_payload_appears_sane(seg_dir: str) -> bool:
     return ratio is None or ratio <= _HNSW_LINK_TO_DATA_MAX_RATIO
 
 
+def _metadata_less_hnsw_payload_appears_sane(seg_dir: str) -> bool:
+    """Return True for ChromaDB 1.5 metadata-less payload shapes that can reopen.
+
+    ChromaDB 1.5 can persist data/header/length/link files without
+    ``index_metadata.pickle``. In that shape, ``link_lists.bin`` may legitimately
+    be zero bytes even when ``data_level0.bin`` is non-trivial, so the stricter
+    metadata-present guard would false-positive. Still reject missing link files
+    for non-trivial data and link/data bloat.
+    """
+
+    data_path = os.path.join(seg_dir, "data_level0.bin")
+    link_path = os.path.join(seg_dir, "link_lists.bin")
+
+    try:
+        if not os.path.isfile(data_path):
+            return True
+
+        data_size = os.path.getsize(data_path)
+        if data_size <= _HNSW_MISSING_METADATA_DATA_FLOOR:
+            return True
+
+        if not os.path.isfile(link_path):
+            return False
+    except OSError:
+        return False
+
+    ratio = _hnsw_link_to_data_ratio(seg_dir)
+    return ratio is None or ratio <= _HNSW_LINK_TO_DATA_MAX_RATIO
+
+
 # HNSW tuning to prevent link_lists.bin bloat on large mines (#344).
 #
 # With default params (batch_size=100, sync_threshold=1000, initial capacity
@@ -186,14 +216,14 @@ def _segment_appears_healthy(seg_dir: str) -> bool:
     files and quarantine_stale_hnsw would conservatively rename them
     out of the way.
     """
-    if not _hnsw_payload_appears_sane(seg_dir):
-        return False
-
     meta_path = os.path.join(seg_dir, "index_metadata.pickle")
     if not os.path.isfile(meta_path):
         # No metadata is a valid ChromaDB 1.5.x persistent shape as long as
         # the payload files themselves are not structurally implausible.
-        return True
+        return _metadata_less_hnsw_payload_appears_sane(seg_dir)
+
+    if not _hnsw_payload_appears_sane(seg_dir):
+        return False
 
     try:
         size = os.path.getsize(meta_path)

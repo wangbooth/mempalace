@@ -625,6 +625,15 @@ _HEALTHY_META = b"\x80\x04" + b"\x00" * 32 + b"\x2e"
 _CORRUPT_META = b"\x00" * 64
 
 
+def _write_metadata_less_chromadb_payload(seg):
+    """Write the ChromaDB 1.5 shape seen after clean close with no metadata."""
+
+    (seg / "data_level0.bin").write_bytes(b"\0" * (_HNSW_MISSING_METADATA_DATA_FLOOR + 1))
+    (seg / "link_lists.bin").write_bytes(b"")
+    (seg / "header.bin").write_bytes(b"\0" * 100)
+    (seg / "length.bin").write_bytes(b"\0" * 400)
+
+
 def _make_palace_with_segment(tmp_path, hnsw_mtime, sqlite_mtime, meta_bytes=_HEALTHY_META):
     """Helper: build a palace dir with one HNSW segment + sqlite at given
     mtimes. ``meta_bytes`` controls whether the segment looks healthy
@@ -702,9 +711,19 @@ def test_segment_without_metadata_but_with_nontrivial_data_can_be_healthy(tmp_pa
 
     seg = tmp_path / "abcd-1234-5678"
     seg.mkdir()
-    (seg / "data_level0.bin").write_bytes(b"\0" * (_HNSW_MISSING_METADATA_DATA_FLOOR + 1))
+    _write_metadata_less_chromadb_payload(seg)
 
     assert _segment_appears_healthy(str(seg))
+
+
+def test_segment_without_metadata_rejects_nontrivial_data_without_link_lists(tmp_path):
+    """Non-trivial metadata-less data still needs the Chroma payload file set."""
+
+    seg = tmp_path / "abcd-1234-5678"
+    seg.mkdir()
+    (seg / "data_level0.bin").write_bytes(b"\0" * (_HNSW_MISSING_METADATA_DATA_FLOOR + 1))
+
+    assert not _segment_appears_healthy(str(seg))
 
 
 def test_segment_without_metadata_and_tiny_data_is_still_treated_as_fresh(tmp_path):
@@ -727,7 +746,7 @@ def test_quarantine_stale_hnsw_leaves_missing_metadata_with_sane_payload(tmp_pat
         sqlite_mtime=now,
         meta_bytes=None,
     )
-    (seg / "data_level0.bin").write_bytes(b"\0" * (_HNSW_MISSING_METADATA_DATA_FLOOR + 1))
+    _write_metadata_less_chromadb_payload(seg)
     os.utime(seg / "data_level0.bin", (now - 7200, now - 7200))
 
     moved = quarantine_stale_hnsw(str(palace), stale_seconds=3600.0)
