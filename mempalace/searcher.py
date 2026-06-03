@@ -9,6 +9,7 @@ weak closets (regex extraction on narrative content) can only help, never
 hide drawers the direct path would have found.
 """
 
+import json
 import logging
 import math
 import os
@@ -21,7 +22,7 @@ from .palace import get_closets_collection, get_collection
 
 # Closet pointer line format: "topic|entities|→drawer_id_a,drawer_id_b"
 # Multiple lines may join with newlines inside one closet document.
-_CLOSET_DRAWER_REF_RE = re.compile(r"→([\w,]+)")
+_CLOSET_DRAWER_REF_RE = re.compile(r"→([^\s]+)")
 
 logger = logging.getLogger("mempalace_mcp")
 
@@ -189,6 +190,92 @@ def _extract_drawer_ids_from_closet(closet_doc: str) -> list:
             if did and did not in seen:
                 seen[did] = None
     return list(seen.keys())
+
+
+def _drawer_ids_from_closet_hit(closet_doc: str, closet_meta: dict) -> list:
+    """Return scoped drawer IDs from closet metadata or pointer text.
+
+    DeepMem scoped closets write ``drawer_ids_json`` because one scoped closet
+    can represent a room or burst segment. Original mempalace closets encode
+    drawer pointers in the document body. Prefer metadata when present because
+    it is the explicit scope contract, then fall back to parsing the body.
+    """
+    raw = closet_meta.get("drawer_ids_json") if isinstance(closet_meta, dict) else None
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            seen: dict = {}
+            for item in parsed:
+                if isinstance(item, str) and item and item not in seen:
+                    seen[item] = None
+            if seen:
+                return list(seen.keys())
+    return _extract_drawer_ids_from_closet(closet_doc or "")
+
+
+def _flat_result_list(results, key: str) -> list:
+    value = getattr(results, key, None) if not isinstance(results, dict) else results.get(key)
+    return list(value or [])
+
+
+def _metadata_sort_index(meta: dict, fallback: int) -> tuple[int, int, int]:
+    if not isinstance(meta, dict):
+        return (fallback, fallback, fallback)
+    drawer_index = _coerce_optional_int(meta.get("drawer_index"))
+    chunk_index = _coerce_optional_int(meta.get("chunk_index"))
+    primary = drawer_index if drawer_index is not None else chunk_index
+    secondary = chunk_index if chunk_index is not None else primary
+    return (
+        primary if primary is not None else fallback,
+        secondary if secondary is not None else fallback,
+        fallback,
+    )
+
+
+def _coerce_optional_int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ordered_docs_from_get_result(drawer_rows) -> list:
+    docs = _flat_result_list(drawer_rows, "documents")
+    metas = _flat_result_list(drawer_rows, "metadatas")
+    indexed = []
+    for idx, (doc, meta) in enumerate(zip(docs, metas)):
+        indexed.append((_metadata_sort_index(meta, idx), doc or ""))
+    indexed.sort(key=lambda pair: pair[0])
+    return [doc for _, doc in indexed]
+
+
+def _hydrate_hit_from_ordered_docs(hit: dict, ordered_docs: list, query: str, *, max_chars: int) -> None:
+    if not ordered_docs:
+        return
+
+    query_terms = set(_tokenize(query))
+    best_idx, best_score = 0, -1
+    for idx, doc in enumerate(ordered_docs):
+        d_lower = doc.lower()
+        score = sum(1 for term in query_terms if term in d_lower)
+        if score > best_score:
+            best_score, best_idx = score, idx
+
+    start = max(0, best_idx - 1)
+    end = min(len(ordered_docs), best_idx + 2)
+    expanded = "\n\n".join(ordered_docs[start:end])
+    if len(expanded) > max_chars:
+        expanded = (
+            expanded[:max_chars]
+            + f"\n\n[...truncated. {len(ordered_docs)} total drawers. "
+            "Use mempalace_get_drawer for full content.]"
+        )
+    hit["text"] = expanded
+    hit["drawer_index"] = best_idx
+    hit["total_drawers"] = len(ordered_docs)
 
 
 def _expand_with_neighbors(drawers_col, matched_doc: str, matched_meta: dict, radius: int = 1):
@@ -839,7 +926,7 @@ def search_memories(
         return {"error": f"Search error: {e}"}
 
     # Gather closet hits (best-per-source) to build a boost lookup.
-    closet_boost_by_source: dict = {}  # source_file -> (rank, closet_dist, preview)
+    closet_boost_by_source: dict = {}
     try:
         closets_col = get_closets_collection(palace_path, create=False)
         ckwargs = {
@@ -860,7 +947,12 @@ def search_memories(
             cmeta = cmeta or {}
             source = cmeta.get("source_file", "")
             if source and source not in closet_boost_by_source:
-                closet_boost_by_source[source] = (rank, cdist, cdoc[:200])
+                closet_boost_by_source[source] = {
+                    "rank": rank,
+                    "distance": cdist,
+                    "preview": cdoc[:200],
+                    "drawer_ids": _drawer_ids_from_closet_hit(cdoc, cmeta),
+                }
     except Exception:
         # No closets yet — hybrid degrades to pure drawer search.
         logger.debug("Closet collection unavailable; using drawer-only search", exc_info=True)
@@ -889,7 +981,10 @@ def search_memories(
         matched_via = "drawer"
         closet_preview = None
         if source in closet_boost_by_source:
-            c_rank, c_dist, c_preview = closet_boost_by_source[source]
+            boost_info = closet_boost_by_source[source]
+            c_rank = boost_info["rank"]
+            c_dist = boost_info["distance"]
+            c_preview = boost_info["preview"]
             if c_dist <= CLOSET_DISTANCE_CAP and c_rank < len(CLOSET_RANK_BOOSTS):
                 boost = CLOSET_RANK_BOOSTS[c_rank]
                 matched_via = "drawer+closet"
@@ -919,6 +1014,7 @@ def search_memories(
             "_sort_key": effective_dist,
             "_source_file_full": source,
             "_chunk_index": meta.get("chunk_index"),
+            "_closet_drawer_ids": closet_boost_by_source.get(source, {}).get("drawer_ids", []),
         }
         if closet_preview:
             entry["closet_preview"] = closet_preview
@@ -937,6 +1033,25 @@ def search_memories(
         if h["matched_via"] == "drawer":
             continue
         full_source = h.get("_source_file_full") or ""
+        scoped_drawer_ids = h.get("_closet_drawer_ids") or []
+        if scoped_drawer_ids:
+            try:
+                scoped_drawers = drawers_col.get(
+                    ids=scoped_drawer_ids,
+                    include=["documents", "metadatas"],
+                )
+            except Exception:
+                logger.debug("Scoped drawer fetch failed for %s", full_source, exc_info=True)
+            else:
+                ordered_docs = _ordered_docs_from_get_result(scoped_drawers)
+                if ordered_docs:
+                    _hydrate_hit_from_ordered_docs(
+                        h,
+                        ordered_docs,
+                        query,
+                        max_chars=MAX_HYDRATION_CHARS,
+                    )
+                    continue
         if not full_source:
             continue
         try:
@@ -947,41 +1062,15 @@ def search_memories(
         except Exception:
             logger.debug("Neighbor fetch failed for %s", full_source, exc_info=True)
             continue
-        docs = source_drawers.documents
-        metas_ = source_drawers.metadatas
-        if len(docs) <= 1:
+        ordered_docs = _ordered_docs_from_get_result(source_drawers)
+        if len(ordered_docs) <= 1:
             continue
-
-        # Sort by chunk_index so best_idx + neighbors are positional.
-        indexed = []
-        for idx, (d, m) in enumerate(zip(docs, metas_)):
-            ci = m.get("chunk_index", idx) if isinstance(m, dict) else idx
-            if not isinstance(ci, int):
-                ci = idx
-            indexed.append((ci, d))
-        indexed.sort(key=lambda p: p[0])
-        ordered_docs = [d for _, d in indexed]
-
-        query_terms = set(_tokenize(query))
-        best_idx, best_score = 0, -1
-        for idx, d in enumerate(ordered_docs):
-            d_lower = d.lower()
-            s = sum(1 for t in query_terms if t in d_lower)
-            if s > best_score:
-                best_score, best_idx = s, idx
-
-        start = max(0, best_idx - 1)
-        end = min(len(ordered_docs), best_idx + 2)
-        expanded = "\n\n".join(ordered_docs[start:end])
-        if len(expanded) > MAX_HYDRATION_CHARS:
-            expanded = (
-                expanded[:MAX_HYDRATION_CHARS]
-                + f"\n\n[...truncated. {len(ordered_docs)} total drawers. "
-                "Use mempalace_get_drawer for full content.]"
-            )
-        h["text"] = expanded
-        h["drawer_index"] = best_idx
-        h["total_drawers"] = len(ordered_docs)
+        _hydrate_hit_from_ordered_docs(
+            h,
+            ordered_docs,
+            query,
+            max_chars=MAX_HYDRATION_CHARS,
+        )
 
     # Candidate strategy hook: optionally widen the rerank pool's *source*
     # before ranking. Default ("vector") is a no-op; "union" merges top-K
@@ -1010,6 +1099,7 @@ def search_memories(
         h.pop("_sort_key", None)
         h.pop("_source_file_full", None)
         h.pop("_chunk_index", None)
+        h.pop("_closet_drawer_ids", None)
 
     return {
         "query": query,

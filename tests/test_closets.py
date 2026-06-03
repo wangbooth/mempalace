@@ -1476,6 +1476,22 @@ class TestDrawerGrepExpansion:
         col.upsert(ids=ids, documents=docs, metadatas=metas)
         return col, {i: ids[i] for i in range(n_chunks)}
 
+    def _seed_custom_source_file(self, palace_path, source: str, docs: list[str]):
+        col = get_collection(palace_path)
+        ids = [f"drawer_test_room_{source.replace('/', '_')}_{i:03d}" for i in range(len(docs))]
+        metas = [
+            {
+                "wing": "test",
+                "room": "room",
+                "source_file": source,
+                "chunk_index": i,
+                "filed_at": "2026-04-13T00:00:00",
+            }
+            for i in range(len(docs))
+        ]
+        col.upsert(ids=ids, documents=docs, metadatas=metas)
+        return col, {i: ids[i] for i in range(len(docs))}
+
     def test_expand_returns_matched_plus_neighbors(self, palace_path):
         col, by_idx = self._seed_source_file(palace_path, "/proj/doc.md", n_chunks=5)
         matched_meta = {"source_file": "/proj/doc.md", "chunk_index": 2}
@@ -1543,32 +1559,20 @@ class TestDrawerGrepExpansion:
         assert out["total_drawers"] is None
 
     def test_hybrid_search_enrichment_populates_drawer_index_and_total(self, palace_path):
-        """End-to-end: when a closet boosts a source with many drawers, the
-        enrichment step runs drawer-grep across all chunks of that source
-        and exposes drawer_index + total_drawers on the hit (so the client
-        knows which chunk was expanded around)."""
-        col = get_collection(palace_path)
+        """Legacy end-to-end: closets without scoped drawer pointers still
+        use source_file hydration and expose drawer_index + total_drawers."""
         source = "/proj/indexed.md"
-        # Seed 5 drawers for one source file.
-        for i in range(5):
-            col.upsert(
-                ids=[f"drawer_proj_backend_indexed_{i:03d}"],
-                documents=[f"chunk_{i} talks about JWT authentication flow"],
-                metadatas=[
-                    {
-                        "wing": "project",
-                        "room": "backend",
-                        "source_file": source,
-                        "chunk_index": i,
-                        "filed_at": "2026-04-13T00:00:00",
-                    }
-                ],
-            )
-        # Closet pointing at chunk_2 for this source.
+        self._seed_custom_source_file(
+            palace_path,
+            source,
+            [f"chunk_{i} talks about JWT authentication flow" for i in range(5)],
+        )
+        # No drawer pointer in this manual closet, so hydration should fall
+        # back to all drawers from source_file.
         closets = get_closets_collection(palace_path)
         closets.upsert(
             ids=["closet_proj_backend_indexed_01"],
-            documents=["JWT auth|;|→drawer_proj_backend_indexed_002"],
+            documents=["JWT auth legacy manual closet"],
             metadatas=[{"wing": "project", "room": "backend", "source_file": source}],
         )
 
@@ -1583,3 +1587,73 @@ class TestDrawerGrepExpansion:
         # Enriched text must include the grep-best chunk plus one neighbor
         # on each side (chunk boundary may clip).
         assert "chunk_" in top["text"]
+
+    def test_hybrid_search_hydrates_from_drawer_ids_json_scope(self, palace_path):
+        source = "/chat/wxid_alice"
+        _, by_idx = self._seed_custom_source_file(
+            palace_path,
+            source,
+            [
+                "chunk_0 outside old topic",
+                "chunk_1 scoped banana planning",
+                "chunk_2 scoped banana target answer",
+                "chunk_3 outside later topic",
+                "chunk_4 outside tail topic",
+            ],
+        )
+        closets = get_closets_collection(palace_path)
+        closets.upsert(
+            ids=["closet_wx_burst_01"],
+            documents=["banana target|;|→ignored_legacy_pointer"],
+            metadatas=[
+                {
+                    "wing": "test",
+                    "room": "room",
+                    "source_file": source,
+                    "closet_scope": "burst",
+                    "drawer_ids_json": json.dumps([by_idx[1], by_idx[2]]),
+                }
+            ],
+        )
+
+        result = search_memories("banana target", palace_path, wing="test", room="room")
+
+        boosted = [h for h in result["results"] if h["matched_via"] == "drawer+closet"]
+        assert boosted, "scoped closet should boost matching source"
+        top = boosted[0]
+        assert top["total_drawers"] == 2
+        assert "chunk_1" in top["text"]
+        assert "chunk_2" in top["text"]
+        assert "chunk_0" not in top["text"]
+        assert "chunk_3" not in top["text"]
+        assert "chunk_4" not in top["text"]
+
+    def test_hybrid_search_hydrates_from_closet_doc_pointers(self, palace_path):
+        source = "/chat/room-pointer.md"
+        _, by_idx = self._seed_custom_source_file(
+            palace_path,
+            source,
+            [
+                "chunk_0 outside old topic",
+                "chunk_1 scoped cider planning",
+                "chunk_2 scoped cider target answer",
+                "chunk_3 outside later topic",
+            ],
+        )
+        closets = get_closets_collection(palace_path)
+        closets.upsert(
+            ids=["closet_pointer_01"],
+            documents=[f"cider target|;|→{by_idx[1]},{by_idx[2]}"],
+            metadatas=[{"wing": "test", "room": "room", "source_file": source}],
+        )
+
+        result = search_memories("cider target", palace_path, wing="test", room="room")
+
+        boosted = [h for h in result["results"] if h["matched_via"] == "drawer+closet"]
+        assert boosted, "closet pointer should boost matching source"
+        top = boosted[0]
+        assert top["total_drawers"] == 2
+        assert "chunk_1" in top["text"]
+        assert "chunk_2" in top["text"]
+        assert "chunk_0" not in top["text"]
+        assert "chunk_3" not in top["text"]
