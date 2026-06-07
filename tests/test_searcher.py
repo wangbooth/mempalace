@@ -229,6 +229,45 @@ class TestSearchMemories:
             "$and": [{"wing": "project"}, {"room": "backend"}, {"source_file": "x.md"}]
         }
 
+    def test_vector_disabled_with_generic_where_returns_clear_error(self):
+        with patch("mempalace.searcher._bm25_only_via_sqlite") as bm25_only:
+            result = search_memories(
+                "test",
+                "/fake/path",
+                vector_disabled=True,
+                where={"source_file": "scoped.md"},
+            )
+
+        assert "error" in result
+        assert "generic where" in result["error"]
+        assert "BM25-only fallback" in result["error"]
+        bm25_only.assert_not_called()
+
+    def test_union_strategy_skips_bm25_candidates_when_generic_where_is_present(self):
+        drawers_col = MagicMock()
+        drawers_col.query.return_value = {
+            "documents": [["vector scoped doc"]],
+            "metadatas": [[{"source_file": "scoped.md", "wing": "w", "room": "r"}]],
+            "distances": [[0.4]],
+            "ids": [["d1"]],
+        }
+
+        with (
+            patch("mempalace.searcher.get_collection", return_value=drawers_col),
+            patch("mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")),
+            patch("mempalace.searcher._bm25_only_via_sqlite") as bm25_only,
+        ):
+            result = search_memories(
+                "query",
+                "/fake/path",
+                candidate_strategy="union",
+                where={"source_file": "scoped.md"},
+                n_results=3,
+            )
+
+        bm25_only.assert_not_called()
+        assert [hit["source_file"] for hit in result["results"]] == ["scoped.md"]
+
     def test_metadata_boost_changes_ordering_without_changing_raw_distance(self):
         drawers_col = MagicMock()
         drawers_col.query.return_value = {

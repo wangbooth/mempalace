@@ -51,7 +51,10 @@ Added keyword-only optional parameters to `search_memories()`:
 - `where`: lets callers provide a generic Chroma metadata filter. It is combined
   with legacy `wing` and `room` filters via `$and`; collisions are preserved as
   separate predicates so Chroma validation and caller constraints are not
-  weakened.
+  weakened. Because the sqlite BM25 fallback only supports legacy `wing` and
+  `room` filters, `search_memories(vector_disabled=True, where=...)` returns an
+  explicit error and `candidate_strategy="union"` skips BM25-only expansion when
+  generic `where` is present.
 - `metadata_boost`: lets callers apply an optional metadata-based distance
   reduction after drawer and closet signals are assembled. The hook is clamped,
   ranking-only, and cannot remove results. Public `distance` remains the raw

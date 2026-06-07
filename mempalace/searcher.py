@@ -794,6 +794,7 @@ def _merge_bm25_union_candidates(
     room: str,
     n_results: int,
     max_distance: float = 0.0,
+    where: dict | None = None,
 ) -> None:
     """Append top-K BM25-only candidates from sqlite into ``hits`` in place.
 
@@ -818,6 +819,9 @@ def _merge_bm25_union_candidates(
     within the requested vector-distance bound.
     """
     if max_distance > 0.0:
+        return
+    if where:
+        logger.debug("candidate_strategy=union: skipping BM25 merge because generic where is set")
         return
 
     try:
@@ -886,6 +890,7 @@ def _apply_candidate_strategy(
     room: str,
     n_results: int,
     max_distance: float = 0.0,
+    where: dict | None = None,
 ) -> None:
     """Dispatch to the registered merger for ``strategy``.
 
@@ -894,7 +899,16 @@ def _apply_candidate_strategy(
     """
     merger = _CANDIDATE_MERGERS[strategy]
     if merger is not None:
-        merger(hits, query, palace_path, wing, room, n_results, max_distance=max_distance)
+        merger(
+            hits,
+            query,
+            palace_path,
+            wing,
+            room,
+            n_results,
+            max_distance=max_distance,
+            where=where,
+        )
 
 
 def search_memories(
@@ -964,6 +978,11 @@ def search_memories(
     _validate_candidate_strategy(candidate_strategy)
 
     if vector_disabled:
+        if where:
+            return {
+                "error": "generic where is not supported by the BM25-only fallback",
+                "hint": "Use vector search for generic where filters or constrain fallback with wing/room.",
+            }
         return _bm25_only_via_sqlite(
             query,
             palace_path,
@@ -1170,6 +1189,7 @@ def search_memories(
         room,
         n_results,
         max_distance=max_distance,
+        where=where,
     )
 
     # BM25 hybrid re-rank within the final candidate set, then trim back
