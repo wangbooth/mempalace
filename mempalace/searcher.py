@@ -16,6 +16,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
+from typing import Callable
 
 from .backends import CollectionNotInitializedError, PalaceNotFoundError
 from .palace import get_closets_collection, get_collection
@@ -154,7 +155,7 @@ def _hybrid_rank(
 
     scored = []
     for r, raw, norm in zip(results, bm25_raw, bm25_norm):
-        distance = r.get("distance")
+        distance = r.get("effective_distance", r.get("distance"))
         if distance is None:
             vec_sim = 0.0
         else:
@@ -176,6 +177,70 @@ def build_where_filter(wing: str = None, room: str = None) -> dict:
     elif room:
         return {"room": room}
     return {}
+
+
+def _where_filter_parts(where: dict | None) -> list:
+    if not where:
+        return []
+    if set(where) == {"$and"} and isinstance(where.get("$and"), list):
+        return list(where["$and"])
+    return [where]
+
+
+def _combine_where_filters(base_where: dict | None, extra_where: dict | None) -> dict:
+    """Combine Chroma where filters without merging colliding keys.
+
+    ``base_where`` is usually the legacy wing/room filter. ``extra_where`` is
+    a caller-provided generic Chroma filter. Keeping colliding predicates as
+    separate ``$and`` terms preserves Chroma validation and avoids silently
+    weakening either constraint.
+    """
+    parts = _where_filter_parts(base_where) + _where_filter_parts(extra_where)
+    if not parts:
+        return {}
+    if len(parts) == 1:
+        return parts[0]
+    return {"$and": parts}
+
+
+def _query_collection_for_search(
+    collection,
+    *,
+    query: str,
+    query_embeddings: list[list[float]] | None,
+    n_results: int,
+    where: dict | None,
+    include: list[str],
+):
+    kwargs = {
+        "n_results": n_results,
+        "include": include,
+    }
+    if query_embeddings is None:
+        kwargs["query_texts"] = [query]
+    else:
+        kwargs["query_embeddings"] = query_embeddings
+    if where:
+        kwargs["where"] = where
+    return collection.query(**kwargs)
+
+
+def _clamped_metadata_boost(
+    metadata: dict,
+    metadata_boost: Callable[[dict], float] | None,
+) -> float:
+    if metadata_boost is None:
+        return 0.0
+    try:
+        value = float(metadata_boost(metadata))
+    except (TypeError, ValueError):
+        return 0.0
+    except Exception:
+        logger.debug("metadata_boost hook failed", exc_info=True)
+        return 0.0
+    if not math.isfinite(value) or value < 0.0:
+        return 0.0
+    return min(2.0, value)
 
 
 def _extract_drawer_ids_from_closet(closet_doc: str) -> list:
@@ -842,6 +907,10 @@ def search_memories(
     vector_disabled: bool = False,
     candidate_strategy: str = "vector",
     collection_name: str = None,
+    *,
+    query_embeddings: list[list[float]] | None = None,
+    where: dict | None = None,
+    metadata_boost: Callable[[dict], float] | None = None,
 ) -> dict:
     """Programmatic search — returns a dict instead of printing.
 
@@ -879,6 +948,15 @@ def search_memories(
               When ``max_distance > 0.0`` is also set, BM25-only candidates
               are skipped — they have no vector distance and would silently
               violate the requested distance threshold.
+        collection_name: Optional drawer collection override.
+        query_embeddings: Optional precomputed embedding for the query. When
+            provided, it is used only for Chroma vector lookup; ``query`` still
+            feeds BM25 reranking, hydration, diagnostics, and fallback.
+        where: Optional generic Chroma metadata filter. It is combined with
+            legacy wing/room filters using ``$and``.
+        metadata_boost: Optional ranking hook returning a non-negative distance
+            reduction based on drawer metadata. It is clamped by the searcher
+            and never filters results.
     """
     # Validate the strategy eagerly so invalid values fail the same way
     # regardless of whether the call routes through the vector path or
@@ -904,7 +982,7 @@ def search_memories(
             "hint": "Run: mempalace init <dir> && mempalace mine <dir>",
         }
 
-    where = build_where_filter(wing, room)
+    chroma_where = _combine_where_filters(build_where_filter(wing, room), where)
 
     # Hybrid retrieval: always query drawers directly (the floor), then use
     # closet hits to boost rankings. Closets are a ranking SIGNAL, never a
@@ -914,14 +992,14 @@ def search_memories(
     # produces low-signal closets (regex extraction matches few topics)
     # and closet-first routing hides drawers that direct search would find.
     try:
-        dkwargs = {
-            "query_texts": [query],
-            "n_results": n_results * 3,  # over-fetch for re-ranking
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            dkwargs["where"] = where
-        drawer_results = drawers_col.query(**dkwargs)
+        drawer_results = _query_collection_for_search(
+            drawers_col,
+            query=query,
+            query_embeddings=query_embeddings,
+            n_results=n_results * 3,  # over-fetch for re-ranking
+            where=chroma_where,
+            include=["documents", "metadatas", "distances"],
+        )
     except Exception as e:
         return {"error": f"Search error: {e}"}
 
@@ -929,14 +1007,14 @@ def search_memories(
     closet_boost_by_source: dict = {}
     try:
         closets_col = get_closets_collection(palace_path, create=False)
-        ckwargs = {
-            "query_texts": [query],
-            "n_results": n_results * 2,
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            ckwargs["where"] = where
-        closet_results = closets_col.query(**ckwargs)
+        closet_results = _query_collection_for_search(
+            closets_col,
+            query=query,
+            query_embeddings=query_embeddings,
+            n_results=n_results * 2,
+            where=chroma_where,
+            include=["documents", "metadatas", "distances"],
+        )
         for rank, (cdoc, cmeta, cdist) in enumerate(
             zip(
                 _first_or_empty(closet_results, "documents"),
@@ -995,7 +1073,11 @@ def search_memories(
         # can go negative — which (a) yields ``similarity > 1.0`` downstream
         # and (b) makes the sort key land *below* ordinary positive distances,
         # inverting the ranking so the best hybrid matches sort last.
-        effective_dist = max(0.0, min(2.0, dist - boost))
+        metadata_reduction = min(
+            _clamped_metadata_boost(meta, metadata_boost),
+            max(0.0, dist - boost),
+        )
+        effective_dist = max(0.0, min(2.0, dist - boost - metadata_reduction))
         entry = {
             "text": doc,
             "wing": meta.get("wing", "unknown"),
@@ -1006,6 +1088,7 @@ def search_memories(
             "distance": round(dist, 4),
             "effective_distance": round(effective_dist, 4),
             "closet_boost": round(boost, 3),
+            "metadata_boost": round(metadata_reduction, 3),
             "matched_via": matched_via,
             # Internal: retain the full source_file path + chunk_index so the
             # enrichment step below doesn't have to reverse-lookup via
@@ -1103,7 +1186,10 @@ def search_memories(
 
     return {
         "query": query,
-        "filters": {"wing": wing, "room": room},
+        "filters": {
+            **{"wing": wing, "room": room},
+            **({"where": where} if where else {}),
+        },
         "total_before_filter": len(_first_or_empty(drawer_results, "documents")),
         "results": hits,
     }
