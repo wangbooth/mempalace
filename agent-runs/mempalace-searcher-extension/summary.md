@@ -12,6 +12,7 @@
 - `feat(search): support external query embeddings`
 - `fix(search): guard generic where in bm25 fallback`
 - `fix(search): expose drawer ids in hybrid results`
+- `fix(search): enforce where during hydration`
 
 ## Tests Run
 
@@ -19,7 +20,7 @@
 python3.11 -m pytest tests/test_searcher.py tests/test_hybrid_search.py tests/test_closets.py -q
 ```
 
-Result: `129 passed in 25.07s`
+Result: `131 passed in 37.77s`
 
 ```bash
 python3.11 -m ruff check mempalace/searcher.py tests/test_searcher.py tests/test_hybrid_search.py tests/test_closets.py
@@ -53,6 +54,9 @@ Result: `All checks passed!`
 - Drawer-derived vector hits expose the Chroma drawer id as `drawer_id`. Scoped
   drawer+closet hydration updates `drawer_id` when keyword hydration selects a
   different scoped drawer/chunk.
+- Drawer+closet hydration now preserves the combined hard Chroma `where` scope
+  for scoped-id hydration and source-file neighbor hydration. Hydrated hits also
+  carry generic raw drawer metadata through the `metadata` field.
 - `metadata_boost` is clamped, ranking-only, and represented through
   `effective_distance`; public `distance` remains raw vector distance.
 

@@ -321,7 +321,7 @@ def _ordered_drawer_rows_from_get_result(drawer_rows) -> list:
         indexed.append(
             (
                 _metadata_sort_index(meta, idx),
-                {"doc": doc or "", "drawer_id": drawer_id},
+                {"doc": doc or "", "drawer_id": drawer_id, "metadata": meta or {}},
             )
         )
     indexed.sort(key=lambda pair: pair[0])
@@ -335,6 +335,7 @@ def _hydrate_hit_from_ordered_docs(
     *,
     max_chars: int,
     ordered_drawer_ids: list | None = None,
+    ordered_metadatas: list | None = None,
 ) -> None:
     if not ordered_docs:
         return
@@ -361,6 +362,8 @@ def _hydrate_hit_from_ordered_docs(
     hit["total_drawers"] = len(ordered_docs)
     if ordered_drawer_ids and best_idx < len(ordered_drawer_ids) and ordered_drawer_ids[best_idx]:
         hit["drawer_id"] = ordered_drawer_ids[best_idx]
+    if ordered_metadatas and best_idx < len(ordered_metadatas):
+        hit["metadata"] = dict(ordered_metadatas[best_idx] or {})
 
 
 def _expand_with_neighbors(drawers_col, matched_doc: str, matched_meta: dict, radius: int = 1):
@@ -1125,6 +1128,7 @@ def search_memories(
             "room": meta.get("room", "unknown"),
             "source_file": Path(source).name if source else "?",
             "created_at": meta.get("filed_at", "unknown"),
+            "metadata": dict(meta),
             "similarity": round(max(0.0, 1 - effective_dist), 3),
             "distance": round(dist, 4),
             "effective_distance": round(effective_dist, 4),
@@ -1164,6 +1168,7 @@ def search_memories(
             try:
                 scoped_drawers = drawers_col.get(
                     ids=scoped_drawer_ids,
+                    where=chroma_where or None,
                     include=["documents", "metadatas"],
                 )
             except Exception:
@@ -1178,13 +1183,14 @@ def search_memories(
                         query,
                         max_chars=MAX_HYDRATION_CHARS,
                         ordered_drawer_ids=[row["drawer_id"] for row in ordered_rows],
+                        ordered_metadatas=[row["metadata"] for row in ordered_rows],
                     )
                     continue
         if not full_source:
             continue
         try:
             source_drawers = drawers_col.get(
-                where={"source_file": full_source},
+                where=_combine_where_filters({"source_file": full_source}, chroma_where),
                 include=["documents", "metadatas"],
             )
         except Exception:
@@ -1192,7 +1198,7 @@ def search_memories(
             continue
         ordered_rows = _ordered_drawer_rows_from_get_result(source_drawers)
         ordered_docs = [row["doc"] for row in ordered_rows]
-        if len(ordered_docs) <= 1:
+        if not ordered_docs:
             continue
         _hydrate_hit_from_ordered_docs(
             h,
@@ -1200,6 +1206,7 @@ def search_memories(
             query,
             max_chars=MAX_HYDRATION_CHARS,
             ordered_drawer_ids=[row["drawer_id"] for row in ordered_rows],
+            ordered_metadatas=[row["metadata"] for row in ordered_rows],
         )
 
     # Candidate strategy hook: optionally widen the rerank pool's *source*

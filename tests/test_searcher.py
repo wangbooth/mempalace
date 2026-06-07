@@ -210,6 +210,107 @@ class TestSearchMemories:
         assert hit["drawer_index"] == 1
         assert hit["drawer_id"] == "d2"
 
+    def test_scoped_hydration_keeps_generic_where_scope(self):
+        drawers_col = MagicMock()
+        drawers_col.query.return_value = {
+            "documents": [["work vector hit"]],
+            "metadatas": [[{"source_file": "same.md", "wing": "w", "room": "r", "hall": "work"}]],
+            "distances": [[0.3]],
+            "ids": [["work-vector-id"]],
+        }
+
+        def scoped_get(**kwargs):
+            if kwargs.get("ids") == ["work-id", "personal-id"] and kwargs.get("where") == {
+                "hall": "work"
+            }:
+                return {
+                    "documents": ["work scoped context"],
+                    "metadatas": [{"chunk_index": 0, "hall": "work", "account": "alice"}],
+                    "ids": ["work-id"],
+                }
+            return {
+                "documents": ["work scoped context", "needle personal context"],
+                "metadatas": [
+                    {"chunk_index": 0, "hall": "work", "account": "alice"},
+                    {"chunk_index": 1, "hall": "personal", "account": "bob"},
+                ],
+                "ids": ["work-id", "personal-id"],
+            }
+
+        drawers_col.get.side_effect = scoped_get
+        closets_col = MagicMock()
+        closets_col.query.return_value = {
+            "documents": [["closet pointer"]],
+            "metadatas": [
+                [
+                    {
+                        "source_file": "same.md",
+                        "hall": "work",
+                        "drawer_ids_json": '["work-id", "personal-id"]',
+                    }
+                ]
+            ],
+            "distances": [[0.1]],
+            "ids": [["c1"]],
+        }
+
+        with (
+            patch("mempalace.searcher.get_collection", return_value=drawers_col),
+            patch("mempalace.searcher.get_closets_collection", return_value=closets_col),
+        ):
+            result = search_memories("needle", "/fake/path", where={"hall": "work"})
+
+        hit = result["results"][0]
+        assert hit["drawer_id"] == "work-id"
+        assert hit["text"] == "work scoped context"
+        assert hit["metadata"]["hall"] == "work"
+        assert hit["metadata"]["account"] == "alice"
+
+    def test_source_hydration_combines_source_file_with_generic_where(self):
+        drawers_col = MagicMock()
+        drawers_col.query.return_value = {
+            "documents": [["work vector hit"]],
+            "metadatas": [[{"source_file": "same.md", "wing": "w", "room": "r", "hall": "work"}]],
+            "distances": [[0.3]],
+            "ids": [["work-vector-id"]],
+        }
+
+        def source_get(**kwargs):
+            if kwargs.get("where") == {"$and": [{"source_file": "same.md"}, {"hall": "work"}]}:
+                return {
+                    "documents": ["work source context"],
+                    "metadatas": [{"chunk_index": 0, "hall": "work"}],
+                    "ids": ["work-source-id"],
+                }
+            return {
+                "documents": ["work source context", "needle personal context"],
+                "metadatas": [
+                    {"chunk_index": 0, "hall": "work"},
+                    {"chunk_index": 1, "hall": "personal"},
+                ],
+                "ids": ["work-source-id", "personal-source-id"],
+            }
+
+        drawers_col.get.side_effect = source_get
+        closets_col = MagicMock()
+        closets_col.query.return_value = {
+            "documents": [["closet without scoped ids"]],
+            "metadatas": [[{"source_file": "same.md", "hall": "work"}]],
+            "distances": [[0.1]],
+            "ids": [["c1"]],
+        }
+
+        with (
+            patch("mempalace.searcher.get_collection", return_value=drawers_col),
+            patch("mempalace.searcher.get_closets_collection", return_value=closets_col),
+        ):
+            result = search_memories("needle", "/fake/path", where={"hall": "work"})
+
+        hit = result["results"][0]
+        assert hit["drawer_id"] == "work-source-id"
+        assert hit["text"] == "work source context"
+        assert hit["metadata"]["hall"] == "work"
+
     @pytest.mark.parametrize(
         ("base_where", "extra_where", "expected"),
         [
