@@ -155,6 +155,29 @@ class TestSearchMemories:
         assert result["results"][0]["source_file"] == "b.md"
         assert result["results"][0]["bm25_score"] > 0
 
+    def test_drawer_hits_expose_chroma_drawer_id(self):
+        drawers_col = MagicMock()
+        drawers_col.query.return_value = {
+            "documents": [["first doc", "second doc"]],
+            "metadatas": [
+                [
+                    {"source_file": "a.md", "wing": "w", "room": "r"},
+                    {"source_file": "b.md", "wing": "w", "room": "r"},
+                ]
+            ],
+            "distances": [[0.1, 0.2]],
+            "ids": [["drawer-a", "drawer-b"]],
+        }
+
+        with (
+            patch("mempalace.searcher.get_collection", return_value=drawers_col),
+            patch("mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")),
+        ):
+            result = search_memories("query", "/fake/path")
+
+        assert result["results"][0]["drawer_id"] == "drawer-a"
+        assert result["results"][1]["drawer_id"] == "drawer-b"
+
     def test_query_embeddings_still_use_raw_query_for_scoped_hydration(self):
         drawers_col = MagicMock()
         drawers_col.query.return_value = {
@@ -185,6 +208,7 @@ class TestSearchMemories:
         hit = result["results"][0]
         assert "needle-rich hydrated context" in hit["text"]
         assert hit["drawer_index"] == 1
+        assert hit["drawer_id"] == "d2"
 
     @pytest.mark.parametrize(
         ("base_where", "extra_where", "expected"),

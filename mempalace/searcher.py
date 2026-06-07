@@ -308,16 +308,34 @@ def _coerce_optional_int(value) -> int | None:
 
 
 def _ordered_docs_from_get_result(drawer_rows) -> list:
+    return [row["doc"] for row in _ordered_drawer_rows_from_get_result(drawer_rows)]
+
+
+def _ordered_drawer_rows_from_get_result(drawer_rows) -> list:
     docs = _flat_result_list(drawer_rows, "documents")
     metas = _flat_result_list(drawer_rows, "metadatas")
+    ids = _flat_result_list(drawer_rows, "ids")
     indexed = []
     for idx, (doc, meta) in enumerate(zip(docs, metas)):
-        indexed.append((_metadata_sort_index(meta, idx), doc or ""))
+        drawer_id = ids[idx] if idx < len(ids) else None
+        indexed.append(
+            (
+                _metadata_sort_index(meta, idx),
+                {"doc": doc or "", "drawer_id": drawer_id},
+            )
+        )
     indexed.sort(key=lambda pair: pair[0])
-    return [doc for _, doc in indexed]
+    return [row for _, row in indexed]
 
 
-def _hydrate_hit_from_ordered_docs(hit: dict, ordered_docs: list, query: str, *, max_chars: int) -> None:
+def _hydrate_hit_from_ordered_docs(
+    hit: dict,
+    ordered_docs: list,
+    query: str,
+    *,
+    max_chars: int,
+    ordered_drawer_ids: list | None = None,
+) -> None:
     if not ordered_docs:
         return
 
@@ -341,6 +359,8 @@ def _hydrate_hit_from_ordered_docs(hit: dict, ordered_docs: list, query: str, *,
     hit["text"] = expanded
     hit["drawer_index"] = best_idx
     hit["total_drawers"] = len(ordered_docs)
+    if ordered_drawer_ids and best_idx < len(ordered_drawer_ids) and ordered_drawer_ids[best_idx]:
+        hit["drawer_id"] = ordered_drawer_ids[best_idx]
 
 
 def _expand_with_neighbors(drawers_col, matched_doc: str, matched_meta: dict, radius: int = 1):
@@ -1060,12 +1080,14 @@ def search_memories(
     CLOSET_RANK_BOOSTS = [0.40, 0.25, 0.15, 0.08, 0.04]
     CLOSET_DISTANCE_CAP = 1.5  # cosine dist > 1.5 = too weak to use as signal
 
+    drawer_docs = _first_or_empty(drawer_results, "documents")
+    drawer_metas = _first_or_empty(drawer_results, "metadatas")
+    drawer_distances = _first_or_empty(drawer_results, "distances")
+    drawer_ids = _first_or_empty(drawer_results, "ids")
+
     scored: list = []
-    for doc, meta, dist in zip(
-        _first_or_empty(drawer_results, "documents"),
-        _first_or_empty(drawer_results, "metadatas"),
-        _first_or_empty(drawer_results, "distances"),
-    ):
+    for idx, (doc, meta, dist) in enumerate(zip(drawer_docs, drawer_metas, drawer_distances)):
+        drawer_id = drawer_ids[idx] if idx < len(drawer_ids) else None
         meta = meta or {}
         doc = doc or ""
         # Filter on raw distance before rounding to avoid precision loss.
@@ -1118,6 +1140,8 @@ def search_memories(
             "_chunk_index": meta.get("chunk_index"),
             "_closet_drawer_ids": closet_boost_by_source.get(source, {}).get("drawer_ids", []),
         }
+        if drawer_id:
+            entry["drawer_id"] = drawer_id
         if closet_preview:
             entry["closet_preview"] = closet_preview
         scored.append(entry)
@@ -1145,13 +1169,15 @@ def search_memories(
             except Exception:
                 logger.debug("Scoped drawer fetch failed for %s", full_source, exc_info=True)
             else:
-                ordered_docs = _ordered_docs_from_get_result(scoped_drawers)
+                ordered_rows = _ordered_drawer_rows_from_get_result(scoped_drawers)
+                ordered_docs = [row["doc"] for row in ordered_rows]
                 if ordered_docs:
                     _hydrate_hit_from_ordered_docs(
                         h,
                         ordered_docs,
                         query,
                         max_chars=MAX_HYDRATION_CHARS,
+                        ordered_drawer_ids=[row["drawer_id"] for row in ordered_rows],
                     )
                     continue
         if not full_source:
@@ -1164,7 +1190,8 @@ def search_memories(
         except Exception:
             logger.debug("Neighbor fetch failed for %s", full_source, exc_info=True)
             continue
-        ordered_docs = _ordered_docs_from_get_result(source_drawers)
+        ordered_rows = _ordered_drawer_rows_from_get_result(source_drawers)
+        ordered_docs = [row["doc"] for row in ordered_rows]
         if len(ordered_docs) <= 1:
             continue
         _hydrate_hit_from_ordered_docs(
@@ -1172,6 +1199,7 @@ def search_memories(
             ordered_docs,
             query,
             max_chars=MAX_HYDRATION_CHARS,
+            ordered_drawer_ids=[row["drawer_id"] for row in ordered_rows],
         )
 
     # Candidate strategy hook: optionally widen the rerank pool's *source*

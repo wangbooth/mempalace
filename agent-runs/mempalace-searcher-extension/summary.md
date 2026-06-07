@@ -5,11 +5,13 @@
 - `mempalace/searcher.py`
 - `tests/test_searcher.py`
 - `DEEPMEM_FORK.md`
+- `agent-runs/mempalace-searcher-extension/summary.md`
 
 ## Commits Created
 
 - `feat(search): support external query embeddings`
 - `fix(search): guard generic where in bm25 fallback`
+- `fix(search): expose drawer ids in hybrid results`
 
 ## Tests Run
 
@@ -17,7 +19,7 @@
 python3.11 -m pytest tests/test_searcher.py tests/test_hybrid_search.py tests/test_closets.py -q
 ```
 
-Result: `128 passed in 38.13s`
+Result: `129 passed in 25.07s`
 
 ```bash
 python3.11 -m ruff check mempalace/searcher.py tests/test_searcher.py tests/test_hybrid_search.py tests/test_closets.py
@@ -48,6 +50,9 @@ Result: `All checks passed!`
   `vector_disabled=True` returns an explicit error, and
   `candidate_strategy="union"` skips BM25-only candidate expansion when generic
   `where` is present.
+- Drawer-derived vector hits expose the Chroma drawer id as `drawer_id`. Scoped
+  drawer+closet hydration updates `drawer_id` when keyword hydration selects a
+  different scoped drawer/chunk.
 - `metadata_boost` is clamped, ranking-only, and represented through
   `effective_distance`; public `distance` remains raw vector distance.
 
