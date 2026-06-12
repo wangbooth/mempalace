@@ -417,6 +417,31 @@ class TestSearchMemories:
         bm25_only.assert_called_once()
         assert "error" not in result
 
+    def test_expand_to_burst_chroma_filter_uses_and_not_two_key_dict(self):
+        """Burst filter must produce $and with single-key elements, not a two-key dict.
+
+        ChromaDB validate_where rejects dicts with more than one operator key with
+        ValueError("Expected where to have exactly one operator"). The burst code
+        constructs the filter via nested _combine_where_filters so each $and element
+        is single-key. This test pins that shape so a regression back to the broken
+        two-key dict form causes an immediate failure.
+        """
+        src = "chatgpt-export/conversation.json"
+        bi = 2
+        burst_filter = _combine_where_filters(
+            _combine_where_filters(
+                {"source_file": src},
+                {"burst_index": {"$eq": bi}},
+            ),
+            None,
+        )
+        assert "$and" in burst_filter, "burst filter must use $and combinator"
+        for element in burst_filter["$and"]:
+            assert len(element) == 1, (
+                f"each $and element must have exactly one key (ChromaDB requirement); "
+                f"got {list(element.keys())}"
+            )
+
     def test_union_strategy_skips_bm25_candidates_when_generic_where_is_present(self):
         drawers_col = MagicMock()
         drawers_col.query.return_value = {
