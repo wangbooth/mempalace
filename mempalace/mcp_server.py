@@ -1169,6 +1169,7 @@ def tool_search(
         max_distance=dist,
         vector_disabled=_vector_disabled,
         collection_name=_config.collection_name,
+        expand_to_burst=True,
     )
     if _is_transient_index_error(result):
         # Post-bulk-write HNSW flush window (#1315): drop caches, give
@@ -1186,6 +1187,7 @@ def tool_search(
             max_distance=dist,
             vector_disabled=_vector_disabled,
             collection_name=_config.collection_name,
+            expand_to_burst=True,
         )
         if not _is_transient_index_error(result):
             result["index_recovered"] = True

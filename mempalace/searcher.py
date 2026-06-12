@@ -962,6 +962,7 @@ def _finalize_candidate_hits(
         h.pop("_sort_key", None)
         h.pop("_source_file_full", None)
         h.pop("_chunk_index", None)
+        h.pop("_burst_index", None)
         h.pop("_closet_drawer_ids", None)
     return hits, None
 
@@ -1140,6 +1141,7 @@ def search_memories(
     query_embeddings: list[list[float]] | None = None,
     where: dict | None = None,
     metadata_boost: Callable[[dict], float] | None = None,
+    expand_to_burst: bool = False,
 ) -> dict:
     """Programmatic search — returns a dict instead of printing.
 
@@ -1184,6 +1186,13 @@ def search_memories(
         metadata_boost: Optional ranking hook returning a non-negative distance
             reduction based on drawer metadata. It is clamped by the searcher
             and never filters results.
+        expand_to_burst: When True, a matched drawer is expanded to include
+            all sibling drawers that share the same ``source_file`` and
+            ``burst_index`` (i.e. the full time-cohesive burst the data was
+            chunked into). Multiple drawers from the same burst are deduplicated
+            before the ``n_results`` slice so they don't waste result slots.
+            Intended for MCP / agent callers that consume the full text rather
+            than display a preview. App-facing routes should leave this False.
     """
     # Validate the strategy eagerly so invalid values fail the same way
     # regardless of whether the call routes through the vector path or
@@ -1215,8 +1224,12 @@ def search_memories(
     # produces low-signal closets (regex extraction matches few topics)
     # and closet-first routing hides drawers that direct search would find.
     try:
+        # Over-fetch more when burst expansion is on: burst dedup removes
+        # sibling drawers before the n_results slice, so we need a larger
+        # initial pool to end up with n_results unique bursts.
+        over_fetch = n_results * (5 if expand_to_burst else 3)
         dkwargs = {
-            "n_results": n_results * 3,  # over-fetch for re-ranking
+            "n_results": over_fetch,
             "include": ["documents", "metadatas", "distances"],
         }
         if query_embeddings is None:
@@ -1328,6 +1341,7 @@ def search_memories(
             "_sort_key": effective_dist,
             "_source_file_full": source,
             "_chunk_index": meta.get("chunk_index"),
+            "_burst_index": meta.get("burst_index"),
             "_closet_drawer_ids": closet_boost_by_source.get(source, {}).get("drawer_ids", []),
         }
         if drawer_id:
@@ -1337,6 +1351,25 @@ def search_memories(
         scored.append(entry)
 
     scored.sort(key=lambda h: h["_sort_key"])
+
+    # Burst dedup: when expand_to_burst is on, multiple drawers from the same
+    # burst would expand to identical text and waste result slots.  Keep only
+    # the best-scoring (lowest effective_distance) drawer per burst, which is
+    # the first occurrence after the sort above.
+    if expand_to_burst:
+        _seen_bursts: set[tuple] = set()
+        deduped: list = []
+        for h in scored:
+            src = h.get("_source_file_full", "")
+            bi = h.get("_burst_index")
+            if src and bi is not None:
+                bkey = (src, bi)
+                if bkey in _seen_bursts:
+                    continue
+                _seen_bursts.add(bkey)
+            deduped.append(h)
+        scored = deduped
+
     hits = scored[:n_results]
 
     # Drawer-grep enrichment: for closet-boosted hits whose source has
@@ -1394,6 +1427,46 @@ def search_memories(
             ordered_drawer_ids=[row["drawer_id"] for row in ordered_rows],
             ordered_metadatas=[row["metadata"] for row in ordered_rows],
         )
+
+    # Burst expansion: when requested, replace each hit's text with the
+    # concatenation of all drawers sharing the same source_file + burst_index.
+    # Dedup already ensured at most one hit per burst reaches this point.
+    # The expansion query inherits chroma_where so wing/room/account constraints
+    # are preserved and cross-scope drawers are never included.
+    MAX_BURST_CHARS = 8000
+    if expand_to_burst:
+        for h in hits:
+            src = h.get("_source_file_full") or ""
+            bi = h.get("_burst_index")
+            if not src or bi is None:
+                continue
+            try:
+                burst_filter = _combine_where_filters(
+                    {"source_file": src, "burst_index": {"$eq": bi}},
+                    chroma_where,
+                )
+                burst_result = drawers_col.get(
+                    where=burst_filter,
+                    include=["documents", "metadatas"],
+                )
+            except Exception:
+                logger.debug(
+                    "burst expansion failed for %s burst_index=%s", src, bi, exc_info=True
+                )
+                continue
+            ordered = _ordered_drawer_rows_from_get_result(burst_result)
+            if len(ordered) <= 1:
+                continue  # single-drawer burst — matched drawer already complete
+            full_text = "\n\n".join(row["doc"] for row in ordered)
+            if len(full_text) > MAX_BURST_CHARS:
+                full_text = (
+                    full_text[:MAX_BURST_CHARS]
+                    + f"\n\n[...truncated. {len(ordered)} drawers in burst. "
+                    "Use mempalace_get_drawer for full content.]"
+                )
+            h["text"] = full_text
+            h["burst_expanded"] = True
+            h["burst_drawer_count"] = len(ordered)
 
     # Candidate strategy hook: optionally widen the rerank pool's *source*
     # before ranking. Default ("vector") is a no-op; "union" merges top-K
