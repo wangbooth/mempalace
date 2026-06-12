@@ -1,5 +1,9 @@
 # Releasing MemPalace
 
+This document describes upstream MemPalace releases. DeepMem fork releases use
+local packaging, disabled GitHub Actions, and PEP 440 local version tags such as
+`3.4.0+deepmem.0.1.0`; see [DeepMem Release](DEEPMEM_RELEASE.md).
+
 ## Pre-release checklist
 
 Run from the repo root before cutting a release tag.

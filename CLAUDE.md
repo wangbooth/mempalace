@@ -62,6 +62,11 @@ git switch deepmem-main
 git merge develop
 ```
 
+DeepMem release rules are documented in
+[`docs/DEEPMEM_RELEASE.md`](docs/DEEPMEM_RELEASE.md). Use the same PEP 440
+local-version string for the package version and Git tag, for example
+`3.4.0+deepmem.0.1.0`.
+
 ## Commands
 
 ```bash

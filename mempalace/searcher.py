@@ -348,8 +348,7 @@ def _hydrate_hit_from_ordered_docs(
     expanded = "\n\n".join(ordered_docs[start:end])
     if len(expanded) > max_chars:
         expanded = (
-            expanded[:max_chars]
-            + f"\n\n[...truncated. {len(ordered_docs)} total drawers. "
+            expanded[:max_chars] + f"\n\n[...truncated. {len(ordered_docs)} total drawers. "
             "Use mempalace_get_drawer for full content.]"
         )
     hit["text"] = expanded
