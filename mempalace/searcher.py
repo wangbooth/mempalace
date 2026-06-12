@@ -1447,7 +1447,10 @@ def search_memories(
                 continue
             try:
                 burst_filter = _combine_where_filters(
-                    {"source_file": src, "burst_index": {"$eq": bi}},
+                    _combine_where_filters(
+                        {"source_file": src},
+                        {"burst_index": {"$eq": bi}},
+                    ),
                     chroma_where,
                 )
                 burst_result = drawers_col.get(
