@@ -148,7 +148,9 @@ class TestSearchMemories:
 
         with (
             patch("mempalace.searcher.get_collection", return_value=drawers_col),
-            patch("mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")),
+            patch(
+                "mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")
+            ),
         ):
             result = search_memories("needle", "/fake/path", query_embeddings=[[0.1, 0.2]])
 
@@ -171,7 +173,9 @@ class TestSearchMemories:
 
         with (
             patch("mempalace.searcher.get_collection", return_value=drawers_col),
-            patch("mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")),
+            patch(
+                "mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")
+            ),
         ):
             result = search_memories("query", "/fake/path")
 
@@ -317,13 +321,37 @@ class TestSearchMemories:
             (None, None, {}),
             ({"wing": "notes"}, None, {"wing": "notes"}),
             ({"room": "backend"}, None, {"room": "backend"}),
-            ({"$and": [{"wing": "project"}, {"room": "frontend"}]}, None, {"$and": [{"wing": "project"}, {"room": "frontend"}]}),
+            (
+                {"$and": [{"wing": "project"}, {"room": "frontend"}]},
+                None,
+                {"$and": [{"wing": "project"}, {"room": "frontend"}]},
+            ),
             (None, {"source_file": "x.md"}, {"source_file": "x.md"}),
-            ({"wing": "notes"}, {"source_file": "x.md"}, {"$and": [{"wing": "notes"}, {"source_file": "x.md"}]}),
-            ({"room": "backend"}, {"source_file": "x.md"}, {"$and": [{"room": "backend"}, {"source_file": "x.md"}]}),
-            ({"wing": "notes"}, {"$and": [{"source_file": "x.md"}, {"room": "backend"}]}, {"$and": [{"wing": "notes"}, {"source_file": "x.md"}, {"room": "backend"}]}),
-            ({"wing": "notes"}, {"wing": "project"}, {"$and": [{"wing": "notes"}, {"wing": "project"}]}),
-            ({"room": "backend"}, {"room": "frontend"}, {"$and": [{"room": "backend"}, {"room": "frontend"}]}),
+            (
+                {"wing": "notes"},
+                {"source_file": "x.md"},
+                {"$and": [{"wing": "notes"}, {"source_file": "x.md"}]},
+            ),
+            (
+                {"room": "backend"},
+                {"source_file": "x.md"},
+                {"$and": [{"room": "backend"}, {"source_file": "x.md"}]},
+            ),
+            (
+                {"wing": "notes"},
+                {"$and": [{"source_file": "x.md"}, {"room": "backend"}]},
+                {"$and": [{"wing": "notes"}, {"source_file": "x.md"}, {"room": "backend"}]},
+            ),
+            (
+                {"wing": "notes"},
+                {"wing": "project"},
+                {"$and": [{"wing": "notes"}, {"wing": "project"}]},
+            ),
+            (
+                {"room": "backend"},
+                {"room": "frontend"},
+                {"$and": [{"room": "backend"}, {"room": "frontend"}]},
+            ),
         ],
     )
     def test_combine_where_filters(self, base_where, extra_where, expected):
@@ -340,7 +368,9 @@ class TestSearchMemories:
 
         with (
             patch("mempalace.searcher.get_collection", return_value=drawers_col),
-            patch("mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")),
+            patch(
+                "mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")
+            ),
         ):
             search_memories(
                 "test",
@@ -368,6 +398,50 @@ class TestSearchMemories:
         assert "BM25-only fallback" in result["error"]
         bm25_only.assert_not_called()
 
+    def test_vector_disabled_with_expand_to_burst_logs_warning(self):
+        """vector_disabled=True + expand_to_burst=True: BM25 path proceeds but logs a warning."""
+        with patch("mempalace.searcher._bm25_only_via_sqlite") as bm25_only, \
+             patch("mempalace.searcher.logger") as mock_logger:
+            bm25_only.return_value = {"results": []}
+            result = search_memories(
+                "test",
+                "/fake/path",
+                vector_disabled=True,
+                expand_to_burst=True,
+            )
+
+        mock_logger.warning.assert_called_once()
+        warning_msg = mock_logger.warning.call_args.args[0]
+        assert "expand_to_burst" in warning_msg
+        assert "BM25" in warning_msg or "vector_disabled" in warning_msg
+        bm25_only.assert_called_once()
+        assert "error" not in result
+
+    def test_expand_to_burst_chroma_filter_uses_and_not_two_key_dict(self):
+        """Burst filter must produce $and with single-key elements, not a two-key dict.
+
+        ChromaDB validate_where rejects dicts with more than one operator key with
+        ValueError("Expected where to have exactly one operator"). The burst code
+        constructs the filter via nested _combine_where_filters so each $and element
+        is single-key. This test pins that shape so a regression back to the broken
+        two-key dict form causes an immediate failure.
+        """
+        src = "chatgpt-export/conversation.json"
+        bi = 2
+        burst_filter = _combine_where_filters(
+            _combine_where_filters(
+                {"source_file": src},
+                {"burst_index": {"$eq": bi}},
+            ),
+            None,
+        )
+        assert "$and" in burst_filter, "burst filter must use $and combinator"
+        for element in burst_filter["$and"]:
+            assert len(element) == 1, (
+                f"each $and element must have exactly one key (ChromaDB requirement); "
+                f"got {list(element.keys())}"
+            )
+
     def test_union_strategy_skips_bm25_candidates_when_generic_where_is_present(self):
         drawers_col = MagicMock()
         drawers_col.query.return_value = {
@@ -379,7 +453,9 @@ class TestSearchMemories:
 
         with (
             patch("mempalace.searcher.get_collection", return_value=drawers_col),
-            patch("mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")),
+            patch(
+                "mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")
+            ),
             patch("mempalace.searcher._bm25_only_via_sqlite") as bm25_only,
         ):
             result = search_memories(
@@ -412,7 +488,9 @@ class TestSearchMemories:
 
         with (
             patch("mempalace.searcher.get_collection", return_value=drawers_col),
-            patch("mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")),
+            patch(
+                "mempalace.searcher.get_closets_collection", side_effect=RuntimeError("no closets")
+            ),
         ):
             result = search_memories("query", "/fake/path", metadata_boost=boost)
 

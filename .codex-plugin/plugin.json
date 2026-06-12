@@ -1,12 +1,12 @@
 {
   "name": "mempalace",
-  "version": "3.3.5",
+  "version": "3.4.0+deepmem.0.1.0",
   "description": "Give your AI a memory — mine projects and conversations into a searchable palace. 19 MCP tools, auto-save hooks, and guided setup.",
   "author": {
     "name": "milla-jovovich"
   },
-  "homepage": "https://github.com/MemPalace/mempalace",
-  "repository": "https://github.com/MemPalace/mempalace",
+  "homepage": "https://github.com/wangbooth/mempalace",
+  "repository": "https://github.com/wangbooth/mempalace",
   "license": "MIT",
   "keywords": [
     "memory",
@@ -35,9 +35,9 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/MemPalace/mempalace",
-    "privacyPolicyURL": "https://github.com/MemPalace/mempalace",
-    "termsOfServiceURL": "https://github.com/MemPalace/mempalace",
+    "websiteURL": "https://github.com/wangbooth/mempalace",
+    "privacyPolicyURL": "https://github.com/wangbooth/mempalace",
+    "termsOfServiceURL": "https://github.com/wangbooth/mempalace",
     "defaultPrompt": [
       "Search my memories for recent decisions",
       "Mine this project into my memory palace",
