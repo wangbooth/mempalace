@@ -1200,6 +1200,11 @@ def search_memories(
     _validate_candidate_strategy(candidate_strategy)
 
     if vector_disabled:
+        if expand_to_burst:
+            logger.warning(
+                "expand_to_burst=True is not supported by the BM25-only (vector_disabled) "
+                "fallback path; results will contain individual drawer text only."
+            )
         return _vector_disabled_search_guarded(
             query=query,
             palace_path=palace_path,

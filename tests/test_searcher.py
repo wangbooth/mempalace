@@ -398,6 +398,25 @@ class TestSearchMemories:
         assert "BM25-only fallback" in result["error"]
         bm25_only.assert_not_called()
 
+    def test_vector_disabled_with_expand_to_burst_logs_warning(self):
+        """vector_disabled=True + expand_to_burst=True: BM25 path proceeds but logs a warning."""
+        with patch("mempalace.searcher._bm25_only_via_sqlite") as bm25_only, \
+             patch("mempalace.searcher.logger") as mock_logger:
+            bm25_only.return_value = {"results": []}
+            result = search_memories(
+                "test",
+                "/fake/path",
+                vector_disabled=True,
+                expand_to_burst=True,
+            )
+
+        mock_logger.warning.assert_called_once()
+        warning_msg = mock_logger.warning.call_args.args[0]
+        assert "expand_to_burst" in warning_msg
+        assert "BM25" in warning_msg or "vector_disabled" in warning_msg
+        bm25_only.assert_called_once()
+        assert "error" not in result
+
     def test_union_strategy_skips_bm25_candidates_when_generic_where_is_present(self):
         drawers_col = MagicMock()
         drawers_col.query.return_value = {
